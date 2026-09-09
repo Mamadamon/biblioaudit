@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+  <title>BiblioAudit Assistant</title>
+
+  <!-- Office.js must be loaded from the CDN; local copies are not supported in production. -->
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+
+  <link rel="stylesheet" href="taskpane.css" />
+</head>
+
+<body class="ba-body">
+
+  <!-- ============================================================= -->
+  <!-- Header                                                        -->
+  <!-- ============================================================= -->
+  <header class="ba-header">
+    <div class="ba-header__mark" aria-hidden="true">
+      <span></span><span></span><span></span><span></span>
+    </div>
+    <div class="ba-header__text">
+      <h1 class="ba-header__title">BiblioAudit</h1>
+      <p class="ba-header__subtitle">Аудит цитирования по ГОСТ</p>
+    </div>
+  </header>
+
+  <main class="ba-main" id="app">
+
+    <!-- ============================================================= -->
+    <!-- Legacy-format notice (.doc, compatibility mode)               -->
+    <!-- ============================================================= -->
+    <section class="ba-alert ba-alert--warning" id="compat-banner" hidden>
+      <strong class="ba-alert__title" id="compat-title"></strong>
+      <p class="ba-alert__body ba-alert__body--prose" id="compat-text"></p>
+    </section>
+
+    <!-- ============================================================= -->
+    <!-- Control panel                                                 -->
+    <!-- ============================================================= -->
+    <section class="ba-card ba-controls" aria-labelledby="controls-title">
+      <h2 class="ba-card__title" id="controls-title">Параметры аудита</h2>
+
+      <div class="ba-field">
+        <label class="ba-field__label" for="bulk-threshold">
+          Порог пакетного цитирования
+        </label>
+        <div class="ba-field__row">
+          <input
+            class="ba-input ba-input--num"
+            type="number"
+            id="bulk-threshold"
+            min="2"
+            max="50"
+            step="1"
+            value="7"
+            inputmode="numeric" />
+          <span class="ba-field__hint">источников в одной скобке</span>
+        </div>
+      </div>
+
+      <div class="ba-field">
+        <label class="ba-checkbox">
+          <input type="checkbox" id="opt-scan-whole-doc" />
+          <span class="ba-checkbox__box" aria-hidden="true"></span>
+          <span class="ba-checkbox__label">
+            Искать ссылки во всём документе
+            <em>включая раздел литературы</em>
+          </span>
+        </label>
+      </div>
+
+      <div class="ba-field">
+        <label class="ba-checkbox">
+          <input type="checkbox" id="opt-strict-order" checked />
+          <span class="ba-checkbox__box" aria-hidden="true"></span>
+          <span class="ba-checkbox__label">
+            Проверять порядок первого упоминания
+            <em>нумерация должна возрастать по тексту</em>
+          </span>
+        </label>
+      </div>
+
+      <button class="ba-btn ba-btn--primary" id="run-audit" type="button">
+        <span class="ba-btn__spinner" aria-hidden="true"></span>
+        <span class="ba-btn__label">Провести аудит</span>
+      </button>
+
+      <p class="ba-status" id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <!-- ============================================================= -->
+    <!-- Loading skeleton                                              -->
+    <!-- ============================================================= -->
+    <section class="ba-skeleton" id="skeleton" hidden aria-hidden="true">
+      <div class="ba-skeleton__row ba-skeleton__row--wide"></div>
+      <div class="ba-skeleton__grid">
+        <div class="ba-skeleton__tile"></div>
+        <div class="ba-skeleton__tile"></div>
+        <div class="ba-skeleton__tile"></div>
+        <div class="ba-skeleton__tile"></div>
+      </div>
+      <div class="ba-skeleton__row"></div>
+      <div class="ba-skeleton__row ba-skeleton__row--short"></div>
+      <div class="ba-skeleton__row"></div>
+    </section>
+
+    <!-- ============================================================= -->
+    <!-- Error banner                                                  -->
+    <!-- ============================================================= -->
+    <section class="ba-alert ba-alert--error" id="error-banner" hidden>
+      <strong class="ba-alert__title">Сбой выполнения</strong>
+      <p class="ba-alert__body" id="error-text"></p>
+    </section>
+
+    <!-- ============================================================= -->
+    <!-- Results container (populated by taskpane.js)                  -->
+    <!-- ============================================================= -->
+    <section class="ba-results" id="results" hidden></section>
+
+    <!-- ============================================================= -->
+    <!-- Export actions                                                -->
+    <!-- ============================================================= -->
+    <section class="ba-card ba-export" id="export-panel" hidden>
+      <h2 class="ba-card__title">Экспорт отчёта</h2>
+      <button class="ba-btn ba-btn--primary ba-btn--export" id="export-docx" type="button">
+        <span class="ba-btn__spinner" aria-hidden="true"></span>
+        <span class="ba-btn__label">Выгрузить в файл Word</span>
+      </button>
+      <p class="ba-export__hint" id="export-filename"></p>
+
+      <div class="ba-export__buttons">
+        <button class="ba-btn ba-btn--ghost" id="copy-markdown" type="button">Копировать Markdown</button>
+        <button class="ba-btn ba-btn--ghost" id="copy-json" type="button">Копировать JSON</button>
+        <button class="ba-btn ba-btn--secondary" id="insert-report" type="button">Вставить в документ</button>
+      </div>
+      <p class="ba-status" id="export-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <!-- ============================================================= -->
+    <!-- Empty state                                                   -->
+    <!-- ============================================================= -->
+    <section class="ba-empty" id="empty-state">
+      <p class="ba-empty__title">Отчёт не сформирован</p>
+      <p class="ba-empty__text">
+        Откройте рукопись со списком литературы и запустите аудит.
+        Раздел определяется по заголовку «Список литературы», «Литература»,
+        «References» или по завершающему нумерованному блоку.
+      </p>
+    </section>
+
+  </main>
+
+  <footer class="ba-footer">
+    <span id="host-info">Инициализация…</span>
+  </footer>
+
+  <script src="taskpane.js"></script>
+</body>
+</html>
