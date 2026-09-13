@@ -786,6 +786,173 @@
     list.deadCount = 0;
   }
 
+  /* --------------------------------------------------------------------------
+   * Библиометрический профиль списка литературы
+   * ------------------------------------------------------------------------
+   * Год издания, наличие DOI и язык записи извлекаются из самого описания.
+   * Индексация в Scopus и Web of Science из текста НЕ определяется — это
+   * свойство внешних баз. Считается только явное упоминание в записи.
+   * ---------------------------------------------------------------------- */
+
+  var BIB = {
+    /** Год: 1800..текущий+1, проверяется отдельно. */
+    year: /\b(1[89]\d{2}|20\d{2}|21\d{2})\b/g,
+    /** DOI по стандарту: 10.<регистрант>/<суффикс>. */
+    doi: /\b10\.\d{4,9}\/\S{1,200}/,
+    doiWord: /\bdoi\b/i,
+    /** Явные пометки индексации, проставленные автором. */
+    scopus: /(scopus|скопус)/i,
+    wos: /(web\s*of\s*science|\bwos\b|веб\s*оф\s*сайенс)/i,
+    /** Ссылки и идентификаторы вычищаются перед определением языка. */
+    noise: /(https?:\/\/\S+|www\.\S+|10\.\d{4,9}\/\S+|[A-Za-z-]*\d{4}-\d{3}[\dXx])/g
+  };
+
+  /** Год издания записи: наибольший правдоподобный год в описании. */
+  function extractYear(description, currentYear) {
+    var text = String(description || "");
+    var best = 0;
+    var match;
+
+    BIB.year.lastIndex = 0;
+    while ((match = BIB.year.exec(text)) !== null) {
+      var year = parseInt(match[1], 10);
+      if (year >= 1800 && year <= currentYear + 1 && year > best) best = year;
+    }
+    return best || null;
+  }
+
+  /** Язык библиографической записи по преобладающему алфавиту. */
+  function entryLanguage(description) {
+    var clean = String(description || "").replace(BIB.noise, " ");
+    var counts = countScripts(clean);
+
+    if (counts.latin + counts.cyrillic < 6) return "";
+    if (counts.cyrillic > counts.latin) {
+      return (counts.tajik >= 2 && counts.tajik / counts.cyrillic >= 0.012) ? "tj" : "ru";
+    }
+    return "en";
+  }
+
+  /**
+   * Корзины по годам: последние пять лет поштучно, дальше пятилетиями.
+   * @returns {Array<{label,from,to,count}>}
+   */
+  function buildYearBuckets(years, currentYear) {
+    var buckets = [];
+    var i;
+
+    for (i = 0; i < 5; i++) {
+      var single = currentYear - i;
+      buckets.push({ label: String(single), from: single, to: single, count: 0 });
+    }
+
+    var oldest = currentYear;
+    for (i = 0; i < years.length; i++) if (years[i] < oldest) oldest = years[i];
+
+    var edge = currentYear - 5;
+    var guard = 0;
+    while (edge >= oldest && guard < 10) {
+      var from = edge - 4;
+      buckets.push({ label: from + "–" + edge, from: from, to: edge, count: 0 });
+      edge = from - 1;
+      guard++;
+    }
+
+    if (oldest <= edge) {
+      buckets.push({ label: "до " + (edge + 1), from: -1, to: edge, count: 0 });
+    }
+
+    for (i = 0; i < years.length; i++) {
+      for (var b = 0; b < buckets.length; b++) {
+        var bucket = buckets[b];
+        var lower = bucket.from === -1 ? -Infinity : bucket.from;
+        if (years[i] >= lower && years[i] <= bucket.to) { bucket.count++; break; }
+      }
+    }
+
+    return buckets;
+  }
+
+  /** Полный библиометрический разбор всех записей всех списков. */
+  function analyseBibliometrics(entries, currentYear) {
+    var years = [];
+    var withDoi = 0;
+    var byLanguage = { ru: 0, en: 0, tj: 0, "": 0 };
+    var englishWithDoi = 0;
+    var scopusMentions = 0;
+    var wosMentions = 0;
+    var noYear = [];
+    var noDoi = [];
+
+    for (var i = 0; i < entries.length; i++) {
+      var entry = entries[i];
+      var text = entry.description || "";
+
+      var year = extractYear(text, currentYear);
+      entry.year = year;
+      if (year) years.push(year); else noYear.push(entry);
+
+      var hasDoi = BIB.doi.test(text) || (BIB.doiWord.test(text) && /10\.\d{4}/.test(text));
+      entry.hasDoi = hasDoi;
+      if (hasDoi) withDoi++; else noDoi.push(entry);
+
+      var lang = entryLanguage(text);
+      entry.entryLanguage = lang;
+      byLanguage[lang] = (byLanguage[lang] || 0) + 1;
+      if (lang === "en" && hasDoi) englishWithDoi++;
+
+      if (BIB.scopus.test(text)) scopusMentions++;
+      if (BIB.wos.test(text)) wosMentions++;
+    }
+
+    years.sort(function (a, b) { return a - b; });
+
+    var total = entries.length;
+    var recent5 = 0;
+    var recent10 = 0;
+    for (var k = 0; k < years.length; k++) {
+      if (years[k] >= currentYear - 4) recent5++;
+      if (years[k] >= currentYear - 9) recent10++;
+    }
+
+    var median = null;
+    if (years.length) {
+      var mid = Math.floor(years.length / 2);
+      median = years.length % 2 ? years[mid] : Math.round((years[mid - 1] + years[mid]) / 2);
+    }
+
+    return {
+      currentYear: currentYear,
+      total: total,
+      buckets: buildYearBuckets(years, currentYear),
+      datedCount: years.length,
+      undatedCount: total - years.length,
+      oldest: years.length ? years[0] : null,
+      newest: years.length ? years[years.length - 1] : null,
+      medianYear: median,
+      recent5: recent5,
+      recent10: recent10,
+      recent5Share: total ? recent5 / total : 0,
+      recent10Share: total ? recent10 / total : 0,
+      doiCount: withDoi,
+      doiShare: total ? withDoi / total : 0,
+      englishCount: byLanguage.en || 0,
+      englishShare: total ? (byLanguage.en || 0) / total : 0,
+      englishWithDoi: englishWithDoi,
+      russianCount: byLanguage.ru || 0,
+      tajikCount: byLanguage.tj || 0,
+      undeterminedLanguage: byLanguage[""] || 0,
+      scopusMentions: scopusMentions,
+      wosMentions: wosMentions,
+      undatedSamples: noYear.slice(0, 5).map(function (e) {
+        return { number: e.number, description: truncate(e.description, 120) };
+      }),
+      withoutDoiSamples: noDoi.slice(0, 5).map(function (e) {
+        return { number: e.number, description: truncate(e.description, 120) };
+      })
+    };
+  }
+
   /** Detect numbers whose first mention breaks ascending GOST ordering. */
   function analyseMentionOrder(citations) {
     var seen = new Set();
@@ -1086,6 +1253,13 @@
       ? analyseMentionOrder(scan.citations)
       : { firstOrder: [], violations: [] };
 
+    // ---- библиометрический профиль -----------------------------------------
+    var allEntries = [];
+    for (i = 0; i < listOrder.length; i++) {
+      allEntries = allEntries.concat(lists[listOrder[i]].entries);
+    }
+    var bibliometrics = analyseBibliometrics(allEntries, new Date().getFullYear());
+
     // ---- языковой разрез ---------------------------------------------------
     var languageKeys = {};
     for (i = 0; i < layout.sections.length; i++) languageKeys[layout.sections[i].language || ""] = true;
@@ -1232,6 +1406,9 @@
       duplicateCount: duplicateNumbers.length,
       languageCount: crossLanguage.lists.length,
       crossLanguageIssues: crossLanguage.issues.length,
+      recent5Share: bibliometrics.recent5Share,
+      doiShare: bibliometrics.doiShare,
+      englishCount: bibliometrics.englishCount,
       deadRatio: totalReferences ? deadSources.length / totalReferences : 0,
       coverage: totalReferences ? resolvedCited / totalReferences : 0,
       citationsPer1000Words: scan.wordCount ? (scan.occurrenceCount / scan.wordCount) * 1000 : 0,
@@ -1275,6 +1452,7 @@
       }),
       languages: languages,
       crossLanguage: crossLanguage,
+      bibliometrics: bibliometrics,
       metrics: metrics,
       citedNumbers: citedNumbers,
       citedCompressed: compressRanges(citedNumbers),
@@ -1339,6 +1517,30 @@
       );
     }
 
+    if (report.bibliometrics && report.bibliometrics.total) {
+      var bib = report.bibliometrics;
+      var depth = "";
+
+      if (bib.datedCount) {
+        depth = "Хронологическая глубина: " + bib.oldest + "–" + bib.newest +
+          ", медиана " + bib.medianYear + "; за последние пять лет — " + bib.recent5 +
+          " из " + bib.total + " (" + Math.round(bib.recent5Share * 100) + "%), " +
+          "за десять — " + bib.recent10 + " (" + Math.round(bib.recent10Share * 100) + "%).";
+      } else {
+        depth = "Год издания не удалось определить ни у одной записи.";
+      }
+      lines.push(depth);
+
+      lines.push(
+        "Состав: " + bib.englishCount + " " +
+        plural(bib.englishCount, "англоязычный источник", "англоязычных источника", "англоязычных источников") +
+        " (" + Math.round(bib.englishShare * 100) + "%), " +
+        bib.doiCount + " " + plural(bib.doiCount, "запись", "записи", "записей") +
+        " с DOI (" + Math.round(bib.doiShare * 100) + "%), из них англоязычных с DOI — " +
+        bib.englishWithDoi + ". " + indexingCaveat()
+      );
+    }
+
     lines.push(
       "Интегральная оценка: " + report.verdict.score + "/100 — " +
       report.verdict.band.label.toLowerCase() + ". " + report.verdict.band.caption + "."
@@ -1390,6 +1592,21 @@
       langTable.rows.forEach(function (row) { out.push("| " + row.join(" | ") + " |"); });
       out.push("");
     }
+
+    [
+      { title: "Распределение источников по годам издания:", table: buildYearTable(report) },
+      { title: "Библиометрический профиль списка:", table: buildBibliometricTable(report) }
+    ].forEach(function (part) {
+      out.push(part.title);
+      out.push("");
+      out.push("| " + part.table.header.join(" | ") + " |");
+      out.push("| " + part.table.header.map(function () { return "---"; }).join(" | ") + " |");
+      part.table.rows.forEach(function (row) { out.push("| " + row.join(" | ") + " |"); });
+      out.push("");
+    });
+
+    out.push(indexingCaveat());
+    out.push("");
 
     // --- 2 ----------------------------------------------------------------
     out.push("## 2. Мёртвые источники (в списке есть, в тексте нет)");
@@ -1584,6 +1801,75 @@
     };
   }
 
+  /** Распределение источников по годам: последние 5 лет поштучно, дальше пятилетиями. */
+  function buildYearTable(report) {
+    var bib = report.bibliometrics;
+    var rows = [];
+    var total = bib.total || 1;
+
+    for (var i = 0; i < bib.buckets.length; i++) {
+      var bucket = bib.buckets[i];
+      // Последние пять лет показываем всегда, пятилетия — только непустые.
+      if (i >= 5 && bucket.count === 0) continue;
+      rows.push([
+        bucket.label,
+        String(bucket.count),
+        Math.round((bucket.count / total) * 100) + "%"
+      ]);
+    }
+
+    if (bib.undatedCount) {
+      rows.push([
+        "год не определён",
+        String(bib.undatedCount),
+        Math.round((bib.undatedCount / total) * 100) + "%"
+      ]);
+    }
+
+    return { type: "table", header: ["Период", "Источников", "Доля"], rows: rows };
+  }
+
+  /** Библиометрический профиль: глубина, DOI, языковой состав, пометки индексации. */
+  function buildBibliometricTable(report) {
+    var bib = report.bibliometrics;
+    var pct = function (share) { return Math.round(share * 100) + "%"; };
+    var rows = [];
+
+    rows.push(["Всего записей в списках", String(bib.total)]);
+    rows.push(["Год издания определён", String(bib.datedCount)]);
+    if (bib.undatedCount) rows.push(["Год издания не определён", String(bib.undatedCount)]);
+
+    if (bib.datedCount) {
+      rows.push(["Диапазон лет", bib.oldest + "–" + bib.newest]);
+      rows.push(["Медианный год", String(bib.medianYear)]);
+      rows.push([
+        "За последние 5 лет (с " + (bib.currentYear - 4) + ")",
+        bib.recent5 + " (" + pct(bib.recent5Share) + ")"
+      ]);
+      rows.push([
+        "За последние 10 лет (с " + (bib.currentYear - 9) + ")",
+        bib.recent10 + " (" + pct(bib.recent10Share) + ")"
+      ]);
+    }
+
+    rows.push(["Источников с DOI", bib.doiCount + " (" + pct(bib.doiShare) + ")"]);
+    rows.push(["Англоязычных источников", bib.englishCount + " (" + pct(bib.englishShare) + ")"]);
+    rows.push(["Из них с DOI", String(bib.englishWithDoi)]);
+    rows.push(["Русскоязычных источников", String(bib.russianCount)]);
+    if (bib.tajikCount) rows.push(["Таджикоязычных источников", String(bib.tajikCount)]);
+    rows.push(["Явная пометка Scopus в записи", String(bib.scopusMentions)]);
+    rows.push(["Явная пометка Web of Science в записи", String(bib.wosMentions)]);
+
+    return { type: "table", header: ["Показатель", "Значение"], rows: rows };
+  }
+
+  /** Оговорка о том, что индексацию по тексту записи установить нельзя. */
+  function indexingCaveat() {
+    return "Принадлежность к Scopus и Web of Science по тексту записи не определяется: " +
+           "это свойство внешних баз, проверяемое только запросом к ним. Подсчитаны " +
+           "англоязычные источники, наличие DOI и явные пометки, проставленные автором.";
+  }
+
   /** Full block list of the exported report. */
   function buildExportBlocks(report, fileName) {
     var m = report.metrics;
@@ -1614,6 +1900,13 @@
       });
       blocks.push(buildLanguageTable(report));
     }
+
+    blocks.push({ type: "p", text: "Распределение источников по годам издания:" });
+    blocks.push(buildYearTable(report));
+
+    blocks.push({ type: "p", text: "Библиометрический профиль списка:" });
+    blocks.push(buildBibliometricTable(report));
+    blocks.push({ type: "p", text: indexingCaveat() });
 
     // --- 2 ----------------------------------------------------------------
     blocks.push({ type: "h", text: "2. Мёртвые источники (в списке есть, в тексте нет)" });
@@ -1806,6 +2099,27 @@
       "</div>";
   }
 
+  /** Табличный блок панели из описания {header, rows}. */
+  function tableCard(title, meta, table) {
+    var head = "<tr>" + table.header.map(function (cell) {
+      return "<th>" + escapeHtml(cell) + "</th>";
+    }).join("") + "</tr>";
+
+    var body = table.rows.map(function (row) {
+      return "<tr>" + row.map(function (cell, columnIndex) {
+        return "<td" + (columnIndex ? ' class="ba-num"' : "") + ">" + escapeHtml(cell) + "</td>";
+      }).join("") + "</tr>";
+    }).join("");
+
+    return '<div class="ba-item ba-item--neutral"><div class="ba-item__body">' +
+      '<div class="ba-item__text"><strong>' + escapeHtml(title) + "</strong></div>" +
+      (meta ? '<div class="ba-item__meta">' + escapeHtml(meta) + "</div>" : "") +
+      '<div class="ba-tablewrap"><table class="ba-table">' +
+        "<thead>" + head + "</thead><tbody>" + body + "</tbody>" +
+      "</table></div>" +
+    "</div></div>";
+  }
+
   function renderReport(report) {
     var m = report.metrics;
     var html = [];
@@ -1907,6 +2221,19 @@
         "</div></div>"
       );
     }
+
+    var bib = report.bibliometrics;
+    s1.push(tableCard(
+      "Источники по годам издания",
+      "год определён у " + bib.datedCount + " из " + bib.total +
+        (bib.medianYear ? " · медиана " + bib.medianYear : ""),
+      buildYearTable(report)
+    ));
+    s1.push(tableCard(
+      "Библиометрический профиль",
+      "индексация в Scopus/WoS по тексту записи не определяется",
+      buildBibliometricTable(report)
+    ));
 
     // parsing diagnostics folded into section 1
     var d = report.diagnostics;
@@ -2567,6 +2894,11 @@
     reportToMarkdown: reportToMarkdown,
     reportToJson: reportToJson,
     buildExportBlocks: buildExportBlocks,
+    analyseBibliometrics: analyseBibliometrics,
+    buildYearTable: buildYearTable,
+    buildBibliometricTable: buildBibliometricTable,
+    extractYear: extractYear,
+    entryLanguage: entryLanguage,
     buildExportFileName: buildExportFileName,
     compressRanges: compressRanges,
     CONFIG: CONFIG
